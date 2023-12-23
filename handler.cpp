@@ -94,7 +94,7 @@ void Handler::write()
 
 void Handler::consoleWriter()
 {
-  auto thread_id = std::this_thread::get_id();
+  std::thread::id thread_id = std::this_thread::get_id();
   {
     std::lock_guard<std::mutex> lock{m_mutex};
     m_threadStates[thread_id].m_type = StateType::Pending;
@@ -136,7 +136,7 @@ void Handler::consoleWriter()
   
 void Handler::fileWriter(std::string_view string)
 {
-  auto thread_id = std::this_thread::get_id();
+  std::thread::id thread_id = std::this_thread::get_id();
   {
     std::lock_guard<std::mutex> lock{m_mutex};
     m_threadStates[thread_id].m_type = StateType::Pending;
