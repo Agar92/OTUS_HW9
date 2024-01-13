@@ -1,6 +1,6 @@
 #include <iostream>
 #include <fstream>
-#include <map>
+#include <unordered_map>
 #include <thread>
 #include <atomic>
 #include <filesystem>
@@ -30,9 +30,17 @@ struct Bulk {
         //std::cout<<"curdir="<<curdir<<std::endl;
     }
     ~Bulk() {
-        //std::this_thread::sleep_for(200ms);
         std::unique_lock<std::mutex> lock(finished_mutex);
-        cv_finished.wait(lock, [this]{return finished.load();});
+        cv_finished.wait(lock, [this]{
+            //we don't need  checkong the condition
+            //queue_log.empty() && queue_file.empty()
+            //Sometimes it will be true, sometimes - not.
+            //But the below lines
+            //queue_log.wake_and_done();
+            //queue_file.wake_and_done();
+            //will force it to be true.
+            return connection_pool.empty();
+        });
         
         queue_log.wake_and_done();
         queue_file.wake_and_done();
@@ -57,8 +65,10 @@ struct Bulk {
     }
 
     void disconnect(const size_t &id) {
-        std::lock_guard<std::mutex> lock(connection_mutex);
+        std::unique_lock<std::mutex> lk{connection_mutex};
         connection_pool.erase(id);
+        lk.unlock();
+        cv_finished.notify_all();
     }
 
 private:
@@ -87,31 +97,44 @@ private:
     }
 
     void to_log_queue() {
-        block_t block;
-        while (queue_log.wait_and_pop(block)) {
-            std::cout << block.cmd << '\n';
-            queue_file.push(block);
+        try {
+            block_t block;
+            while (queue_log.wait_and_pop(block)) {
+                std::cout << block.cmd << '\n';
+                queue_file.push(block);
+            }
+        }
+        catch (std::exception & e) {
+            std::cout<<"***Exception to_log_queue: "<<e.what()<<std::endl;
         }
     }
 
     void to_file_queue(size_t id) {
-        block_t block;
-        while (queue_file.wait_and_pop(block)) {
-            std::lock_guard<std::mutex> lock(finished_mutex);
-            std::ofstream file("log/" + block.t_stamp + std::to_string(id) + ".log");
-            file << block.cmd;
-            file.close();
-            finished = connection_pool.empty() && queue_log.empty() && queue_file.empty();
-            if(finished){
-                cv_finished.notify_all();
+        try {
+            ///throw std::bad_alloc{};
+            block_t block;
+            while (queue_file.wait_and_pop(block)) {
+                //line 33:
+                //std::unique_lock<std::mutex> lock(finished_mutex);
+                //That is why the line below leads to a deadlock:
+                //std::lock_guard<std::mutex> lock(finished_mutex);
+                std::ofstream file("log/" + block.t_stamp + std::to_string(id) + ".log");
+                file << block.cmd;
+                file.close();
+                //This is not necessary here.
+                //We need just check that the connection_pool is empty.
+                /////finished = connection_pool.empty() && queue_log.empty() && queue_file.empty();
+                /////if(finished) cv_finished.notify_all();
             }
-            else;
+        }
+        catch (std::exception & e) {
+            std::cout<<"***Exception to_file_queue: "<<e.what()<<std::endl;
         }
     }
 
     std::string curdir;
     std::atomic<bool> finished{false};
-    std::map<size_t, conn_t> connection_pool;
+    std::unordered_map<size_t, conn_t> connection_pool;
     ts_queue<block_t> queue_log{};
     ts_queue<block_t> queue_file{};
     std::thread log{&Bulk::to_log_queue, this};
@@ -124,7 +147,9 @@ private:
     std::mutex connection_mutex;
 };
 
-Bulk bulk;
+namespace {
+    Bulk bulk;
+}
 
 size_t connect(size_t N) {
     return bulk.connect(N);

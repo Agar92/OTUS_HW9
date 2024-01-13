@@ -12,9 +12,10 @@ class ts_queue {
 
 public:
     void push(T new_value) {
-        std::lock_guard<std::mutex> lk(mut);
+        std::unique_lock<std::mutex> lk(mut);
         Buffer.push(std::move(new_value));
-        cv.notify_one();
+        lk.unlock();
+        cv.notify_all();
     }
 
     bool wait_and_pop(T &value) {
